@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
+	"os"
 
 	"github.com/replicate/replicate-go"
 )
@@ -51,22 +53,26 @@ type FloorPlan struct {
 	NumFloors int `json:"num_floors"`
 }
 
-const modelOwner = "meta"
-const modelName = "meta-llama-3-8b"
+const modelOwner = "yorickvp"
+const modelName = "llava-13b"
+const modelVersion = "80537f9eead1a5bfa72d5ac6ea6414379be41d4d4f6679fd776e9535d1eb58bb"
 
-func (s *Service) getFloorPlan(ctx context.Context, _ string) (*FloorPlan, error) {
-	//imageData, err := os.ReadFile(fileName)
-	//if err != nil {
-	//	return nil, fmt.Errorf("failed to read file %s: %w", fileName, err)
-	//}
-
-	input := replicate.PredictionInput{
-		"prompt": "How many planets are in our solar system?",
+func (s *Service) getFloorPlan(ctx context.Context, fileName string) (*FloorPlan, error) {
+	imageData, err := os.ReadFile(fileName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %w", fileName, err)
 	}
 
-	prediction, err := s.replicateClient.CreatePredictionWithModel(ctx, modelOwner, modelName, input, nil, false)
+	encImageData := base64.StdEncoding.EncodeToString(imageData)
+
+	input := replicate.PredictionInput{
+		"image":  "data:image/jpeg;base64," + encImageData,
+		"prompt": `In this image, extract the information about the number of floors and the square footage of the building. The output should solely be a valid json object that is the following schema: {"sq_ft": number, "num_floors": number}. Do not escape the text`,
+	}
+
+	prediction, err := s.replicateClient.CreatePrediction(ctx, modelVersion, input, nil, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to run model: %w", err)
+		return nil, fmt.Errorf("failed to create prediction: %w", err)
 	}
 
 	err = s.replicateClient.Wait(ctx, prediction)
@@ -74,8 +80,20 @@ func (s *Service) getFloorPlan(ctx context.Context, _ string) (*FloorPlan, error
 		return nil, fmt.Errorf("failed to wait for prediction: %w", err)
 	}
 
-	log.Print("output", prediction.Output)
+	data := ""
+	for _, v := range prediction.Output.([]interface{}) {
+		str, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("failed to convert prediction to []byte")
+		}
+		data += str
+	}
 
-	return nil, nil
+	floorPlan := FloorPlan{}
+	err = json.Unmarshal([]byte(data), &floorPlan)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal data: %w, %v", err, prediction.Output)
+	}
 
+	return &floorPlan, nil
 }
